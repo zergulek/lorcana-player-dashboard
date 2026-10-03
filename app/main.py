@@ -12,60 +12,80 @@ from scripts.source_adapter import get_fresh_data
 BASE = Path(__file__).resolve().parents[1]
 STATIC = BASE / "app" / "static"
 
-
 app = FastAPI(
     title="Lorcana Player Dashboard",
-    version="2.0.0",
+    version="3.0.0",
 )
 
 app.mount(
     "/static",
-    StaticFiles(directory=STATIC),
+    StaticFiles(
+        directory=STATIC
+    ),
     name="static",
 )
-
 
 CACHE_SECONDS = 60
 
 _cache = None
-_cache_time = 0.0
-_cache_lock = threading.Lock()
+_cache_time = 0
+_lock = threading.Lock()
 
 
 def load_data():
+
     global _cache
     global _cache_time
 
     now = time.time()
 
-    if _cache is not None and now - _cache_time < CACHE_SECONDS:
+    if (
+        _cache is not None
+        and now - _cache_time < CACHE_SECONDS
+    ):
         return _cache
 
-    with _cache_lock:
+    with _lock:
+
         now = time.time()
 
-        if _cache is not None and now - _cache_time < CACHE_SECONDS:
+        if (
+            _cache is not None
+            and now - _cache_time < CACHE_SECONDS
+        ):
             return _cache
 
         try:
-            _cache = get_fresh_data()
+
+            data = get_fresh_data()
+
+            _cache = data
             _cache_time = now
 
             print(
-                "Ravensburger data refreshed successfully: "
-                f"{len(_cache.get('players', []))} tracked players"
+                "Ravensburger data refreshed"
             )
 
-            return _cache
+            print(
+                f"Participants: "
+                f"{data['event']['players']}"
+            )
+
+            print(
+                f"Tracked: "
+                f"{len(data['players'])}"
+            )
+
+            return data
 
         except Exception as exc:
+
             print(
-                "ERROR: Could not refresh Ravensburger data:",
+                "ERROR loading Ravensburger:",
                 repr(exc),
             )
 
             if _cache is not None:
-                # Keep serving the last known good data.
                 return _cache
 
             return {
@@ -77,38 +97,109 @@ def load_data():
                 },
                 "last_updated": None,
                 "players": [],
+                "standings": [],
+                "rounds": [],
                 "error": str(exc),
             }
 
 
-@app.get("/", response_class=HTMLResponse)
+@app.get(
+    "/",
+    response_class=HTMLResponse,
+)
 def index():
+
     return (
         STATIC / "index.html"
-    ).read_text(encoding="utf-8")
+    ).read_text(
+        encoding="utf-8"
+    )
 
 
 @app.get("/api/event")
 def event():
-    return JSONResponse(load_data())
 
-
-@app.get("/api/health")
-def health():
-    data = load_data()
-
-    return {
-        "ok": "error" not in data,
-        "event_id": data.get("event", {}).get("id"),
-        "players": data.get("event", {}).get("players", 0),
-        "tracked": len(data.get("players", [])),
-        "last_updated": data.get("last_updated"),
-        "error": data.get("error"),
-    }
+    return JSONResponse(
+        load_data()
+    )
 
 
 @app.get("/api/players")
 def players():
+
     return {
-        "players": load_data().get("players", [])
+        "players": load_data().get(
+            "players",
+            [],
+        )
+    }
+
+
+@app.get("/api/standings")
+def standings():
+
+    data = load_data()
+
+    return {
+        "event": data.get(
+            "event",
+            {},
+        ),
+        "standings": data.get(
+            "standings",
+            [],
+        ),
+    }
+
+
+@app.get("/api/rounds")
+def rounds():
+
+    return {
+        "rounds": load_data().get(
+            "rounds",
+            [],
+        )
+    }
+
+
+@app.get("/api/health")
+def health():
+
+    data = load_data()
+
+    return {
+        "ok": "error" not in data,
+        "event_id": data.get(
+            "event",
+            {},
+        ).get("id"),
+        "participants": data.get(
+            "event",
+            {},
+        ).get("players", 0),
+        "tracked": len(
+            data.get(
+                "players",
+                [],
+            )
+        ),
+        "standings": len(
+            data.get(
+                "standings",
+                [],
+            )
+        ),
+        "rounds": len(
+            data.get(
+                "rounds",
+                [],
+            )
+        ),
+        "last_updated": data.get(
+            "last_updated"
+        ),
+        "error": data.get(
+            "error"
+        ),
     }
