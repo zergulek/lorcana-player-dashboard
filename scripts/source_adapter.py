@@ -13,9 +13,9 @@ BASE = Path(__file__).resolve().parents[1]
 DATA_FILE = BASE / "data" / "event.json"
 
 HEADERS = {
-    "Content-Type": "application/json",
+    "Accept": "application/json",
     "Referer": "https://tcg.ravensburgerplay.com/",
-    "User-Agent": "Mozilla/5.0 LorcanaPlayerDashboard/1.0",
+    "User-Agent": "Mozilla/5.0",
 }
 
 
@@ -30,114 +30,26 @@ def api_get(path, params=None):
     )
 
     response.raise_for_status()
+
     return response.json()
 
 
-def load_tracked_players():
-    """
-    Keep the manually selected/tracked players from data/event.json.
+def get_items(data):
+    if isinstance(data, list):
+        return data
 
-    This means your Discord tags such as Q2W, OSA, IDK, etc.
-    are preserved even though Ravensburger does not provide them.
-    """
-
-    if not DATA_FILE.exists():
-        return {}
-
-    try:
-        data = json.loads(DATA_FILE.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-
-    result = {}
-
-    for player in data.get("players", []):
-        name = player.get("name")
-
-        if name:
-            result[name.lower()] = {
-                "name": name,
-                "tag": player.get("tag", ""),
-            }
-
-    return result
-
-
-def get_name(value):
-    """
-    Extract a player/display name from the many possible shapes
-    used by the Ravensburger API.
-    """
-
-    if value is None:
-        return None
-
-    if isinstance(value, str):
-        return value.strip() or None
-
-    if isinstance(value, dict):
-        for key in (
-            "display_name",
-            "username",
-            "user_name",
-            "screen_name",
-            "name",
-            "nickname",
-            "handle",
-        ):
-            candidate = value.get(key)
-
-            if isinstance(candidate, str) and candidate.strip():
-                return candidate.strip()
-
-        user = value.get("user")
-
-        if isinstance(user, dict):
-            return get_name(user)
-
-    return None
-
-
-def get_player_name(obj):
-    if not isinstance(obj, dict):
-        return get_name(obj)
-
-    for key in (
-        "player",
-        "participant",
-        "user",
-        "registration",
-        "player_profile",
-        "profile",
-    ):
-        if key in obj:
-            name = get_name(obj[key])
-
-            if name:
-                return name
-
-    return get_name(obj)
-
-
-def get_items(payload):
-    """
-    Normalize paginated/list API responses.
-    """
-
-    if isinstance(payload, list):
-        return payload
-
-    if not isinstance(payload, dict):
+    if not isinstance(data, dict):
         return []
 
     for key in (
         "results",
         "items",
-        "registrations",
+        "data",
         "standings",
         "matches",
+        "registrations",
     ):
-        value = payload.get(key)
+        value = data.get(key)
 
         if isinstance(value, list):
             return value
@@ -145,524 +57,578 @@ def get_items(payload):
     return []
 
 
-def get_all_registrations(event_id):
-    registrations = []
+def get_player_name(obj):
+    if obj is None:
+        return None
 
-    page = 1
+    if isinstance(obj, str):
+        return obj.strip()
 
-    while page <= 20:
-        payload = api_get(
-            f"/events/{event_id}/registrations/",
-            {
-                "page": page,
-                "page_size": 100,
-            },
-        )
+    if not isinstance(obj, dict):
+        return None
 
-        items = get_items(payload)
+    # Direct names
+    for key in (
+        "display_name",
+        "displayName",
+        "username",
+        "user_name",
+        "name",
+        "nickname",
+    ):
+        value = obj.get(key)
 
-        if not items:
-            break
+        if isinstance(value, str) and value.strip():
+            return value.strip()
 
-        registrations.extend(items)
+    # Nested player/user objects
+    for key in (
+        "player",
+        "participant",
+        "user",
+        "profile",
+        "player_profile",
+    ):
+        value = obj.get(key)
 
-        next_page = (
-            payload.get("next_page_number")
-            if isinstance(payload, dict)
-            else None
-        )
+        name = get_player_name(value)
 
-        if next_page:
-            page = next_page
-        elif len(items) < 100:
-            break
-        else:
-            page += 1
+        if name:
+            return name
 
-    return registrations
+    # First/last name fallback
+    first = (
+        obj.get("first_name")
+        or obj.get("firstName")
+    )
+
+    last = (
+        obj.get("last_name")
+        or obj.get("lastName")
+    )
+
+    if first:
+        if last:
+            return f"{first} {last[0]}"
+
+        return first
+
+    return None
 
 
 def get_rounds(event):
     rounds = []
 
-    for phase in event.get("tournament_phases", []) or []:
-        for rnd in phase.get("rounds", []) or []:
-            if rnd.get("id") is not None:
-                rounds.append(rnd)
+    # Most common tournament structure.
+    phases = event.get("tournament_phases") or []
+
+    for phase in phases:
+        for rnd in phase.get("rounds") or []:
+            rounds.append(rnd)
+
+    # Some API versions expose rounds directly.
+    if not rounds:
+        rounds = event.get("rounds") or []
 
     return rounds
 
 
 def round_number(rnd):
+    value = (
+        rnd.get("round_number")
+        or rnd.get("roundNumber")
+        or rnd.get("number")
+        or 0
+    )
+
     try:
-        return int(rnd.get("round_number") or 0)
+        return int(value)
     except Exception:
         return 0
 
 
-def get_all_standings(round_id):
-    standings = []
+def get_round_standings(round_id):
+    paths = [
+        f"/tournament-rounds/{round_id}/standings/paginated/",
+        f"/tournament-rounds/{round_id}/standings/",
+    ]
 
-    page = 1
-
-    while page <= 20:
-        payload = api_get(
-            f"/tournament-rounds/{round_id}/standings/paginated/",
-            {
-                "page": page,
-                "page_size": 100,
-            },
-        )
-
-        items = get_items(payload)
-
-        if not items:
-            # Older tournaments sometimes expose the non-paginated endpoint.
-            try:
-                fallback = api_get(
-                    f"/tournament-rounds/{round_id}/standings/"
-                )
-
-                fallback_items = get_items(fallback)
-
-                if fallback_items:
-                    return fallback_items
-            except Exception:
-                pass
-
-            break
-
-        standings.extend(items)
-
-        next_page = (
-            payload.get("next_page_number")
-            if isinstance(payload, dict)
-            else None
-        )
-
-        if next_page:
-            page = next_page
-        elif len(items) < 100:
-            break
-        else:
-            page += 1
-
-    return standings
-
-
-def get_all_matches(round_id):
-    matches = []
-
-    page = 1
-
-    while page <= 20:
-        payload = api_get(
-            f"/tournament-rounds/{round_id}/matches/paginated/",
-            {
-                "page": page,
-                "page_size": 100,
-            },
-        )
-
-        items = get_items(payload)
-
-        if not items:
-            break
-
-        matches.extend(items)
-
-        next_page = (
-            payload.get("next_page_number")
-            if isinstance(payload, dict)
-            else None
-        )
-
-        if next_page:
-            page = next_page
-        elif len(items) < 100:
-            break
-        else:
-            page += 1
-
-    return matches
-
-
-def find_player_name_in_match(match, target_name):
-    """
-    Determine whether target_name participates in a match and return
-    the opponent name.
-    """
-
-    if not isinstance(match, dict):
-        return None
-
-    target = target_name.lower()
-
-    # Common two-player structures.
-    candidates = []
-
-    for key in (
-        "player1",
-        "player2",
-        "player_a",
-        "player_b",
-        "player_one",
-        "player_two",
-        "home_player",
-        "away_player",
-        "participant1",
-        "participant2",
-        "player",
-        "opponent",
-    ):
-        if key in match:
-            name = get_name(match[key])
-
-            if name:
-                candidates.append(name)
-
-    # Nested players list.
-    for key in ("players", "participants"):
-        value = match.get(key)
-
-        if isinstance(value, list):
-            for item in value:
-                name = get_name(item)
-
-                if name:
-                    candidates.append(name)
-
-    candidates = list(dict.fromkeys(candidates))
-
-    if not candidates:
-        return None
-
-    target_found = any(name.lower() == target for name in candidates)
-
-    if not target_found:
-        # Sometimes the API gives first/last name fields instead of username.
-        text = json.dumps(match, ensure_ascii=False).lower()
-
-        if target not in text:
-            return None
-
-    for name in candidates:
-        if name.lower() != target:
-            return name
-
-    return "—"
-
-
-def extract_record(value):
-    """
-    Convert values such as:
-        3-1-0
-        3–1
-        {'wins': 3, 'losses': 1}
-    into wins/losses.
-    """
-
-    if isinstance(value, dict):
-        wins = value.get("wins")
-        losses = value.get("losses")
-
-        if wins is not None or losses is not None:
-            return (
-                int(wins or 0),
-                int(losses or 0),
+    for path in paths:
+        try:
+            response = api_get(
+                path,
+                {
+                    "page": 1,
+                    "page_size": 500,
+                },
             )
 
-        for key in ("record", "match_record", "matchRecord"):
-            if key in value:
-                return extract_record(value[key])
+            items = get_items(response)
 
-    if isinstance(value, str):
-        cleaned = value.replace("–", "-").replace("—", "-")
+            if items:
+                return items
 
-        parts = cleaned.split("-")
+        except Exception as exc:
+            print(
+                f"Standings request failed: "
+                f"{path}: {exc}"
+            )
 
-        if len(parts) >= 2:
-            try:
-                return int(parts[0]), int(parts[1])
-            except ValueError:
-                pass
-
-    return None, None
+    return []
 
 
-def find_standing(standings, player_name):
-    target = player_name.lower()
+def get_round_matches(round_id):
+    paths = [
+        f"/tournament-rounds/{round_id}/matches/paginated/",
+        f"/tournament-rounds/{round_id}/matches/",
+    ]
 
-    for standing in standings:
-        name = get_player_name(standing)
-
-        if name and name.lower() == target:
-            return standing
-
-        # Also search the serialized object as a fallback.
+    for path in paths:
         try:
-            serialized = json.dumps(
-                standing,
-                ensure_ascii=False,
-            ).lower()
+            response = api_get(
+                path,
+                {
+                    "page": 1,
+                    "page_size": 500,
+                },
+            )
 
-            if target in serialized:
-                return standing
-        except Exception:
-            pass
+            items = get_items(response)
 
-    return None
+            if items:
+                return items
+
+        except Exception as exc:
+            print(
+                f"Matches request failed: "
+                f"{path}: {exc}"
+            )
+
+    return []
 
 
-def value_from(obj, *keys):
+def extract_stat(obj, *keys):
     if not isinstance(obj, dict):
         return None
 
     for key in keys:
-        if key in obj and obj[key] is not None:
+        if key in obj:
             return obj[key]
 
     return None
 
 
-def normalize_player(
-    tracked,
-    standing=None,
-    matches=None,
-    current_round=None,
-):
-    name = tracked["name"]
+def normalize_standing(item, rank_fallback):
+    name = get_player_name(item)
 
-    standing = standing or {}
-    matches = matches or []
+    if not name:
+        return None
 
-    rank = value_from(
-        standing,
+    rank = extract_stat(
+        item,
         "rank",
         "placement",
         "position",
     )
 
-    points = value_from(
-        standing,
+    points = extract_stat(
+        item,
         "points",
         "match_points",
+        "matchPoints",
         "total_points",
+        "totalPoints",
     )
 
-    wins = value_from(
-        standing,
-        "match_wins",
+    wins = extract_stat(
+        item,
         "wins",
+        "match_wins",
         "matchWins",
     )
 
-    losses = value_from(
-        standing,
-        "match_losses",
+    losses = extract_stat(
+        item,
         "losses",
+        "match_losses",
         "matchLosses",
     )
 
-    games_won = value_from(
-        standing,
+    draws = extract_stat(
+        item,
+        "draws",
+        "match_draws",
+        "matchDraws",
+    )
+
+    game_wins = extract_stat(
+        item,
         "game_wins",
-        "games_won",
         "gameWins",
     )
 
-    games_lost = value_from(
-        standing,
+    game_losses = extract_stat(
+        item,
         "game_losses",
-        "games_lost",
         "gameLosses",
     )
 
-    # Try record objects/strings if explicit fields weren't present.
-    if wins is None or losses is None:
-        record = value_from(
-            standing,
-            "record",
-            "match_record",
-            "matchRecord",
-        )
-
-        rw, rl = extract_record(record)
-
-        if wins is None:
-            wins = rw
-
-        if losses is None:
-            losses = rl
-
-    opponent = "—"
-
-    normalized_matches = []
-
-    for match in matches:
-        opp = find_player_name_in_match(match, name)
-
-        if not opp:
-            continue
-
-        opponent = opp
-
-        result = "?"
-
-        # Try to identify the result.
-        serialized = json.dumps(
-            match,
-            ensure_ascii=False,
-        ).lower()
-
-        if "win" in serialized:
-            result = "W"
-        elif "loss" in serialized:
-            result = "L"
-
-        normalized_matches.append(
-            {
-                "round": current_round,
-                "opponent": opp,
-                "result": result,
-                "score": value_from(
-                    match,
-                    "score",
-                    "result",
-                    "game_score",
-                ) or "—",
-                "table": value_from(
-                    match,
-                    "table",
-                    "table_number",
-                ),
-            }
-        )
-
     return {
+        "rank": rank if rank is not None else rank_fallback,
         "name": name,
-        "tag": tracked.get("tag", ""),
-        "rank": rank,
-        "points": points,
-        "match_wins": wins,
-        "match_losses": losses,
-        "game_wins": games_won,
-        "game_losses": games_lost,
-        "opponent": opponent,
-        "status": value_from(
-            standing,
-            "status",
-        ) or "active",
-        "matches": normalized_matches,
+        "points": points if points is not None else 0,
+        "wins": wins if wins is not None else 0,
+        "losses": losses if losses is not None else 0,
+        "draws": draws if draws is not None else 0,
+        "game_wins": game_wins if game_wins is not None else 0,
+        "game_losses": game_losses if game_losses is not None else 0,
+
+        # Keep the original API object.
+        # This is extremely useful when Ravensburger changes
+        # a field name.
+        "raw": item,
     }
 
 
+def names_from_match(match):
+    """
+    Return all player names found inside a match.
+
+    We deliberately inspect nested structures instead of
+    assuming a specific player1/player2 schema.
+    """
+
+    names = []
+
+    def walk(value, depth=0):
+        if depth > 5:
+            return
+
+        if isinstance(value, dict):
+
+            # Objects that clearly represent players.
+            possible_name = get_player_name(value)
+
+            if possible_name:
+                names.append(possible_name)
+
+            for key, child in value.items():
+
+                key_lower = str(key).lower()
+
+                if any(
+                    word in key_lower
+                    for word in (
+                        "player",
+                        "participant",
+                        "opponent",
+                        "user",
+                    )
+                ):
+                    walk(child, depth + 1)
+
+        elif isinstance(value, list):
+            for child in value:
+                walk(child, depth + 1)
+
+    walk(match)
+
+    # Remove duplicates.
+    result = []
+
+    for name in names:
+        if name not in result:
+            result.append(name)
+
+    return result
+
+
+def normalize_match(match, round_id, round_no):
+    players = names_from_match(match)
+
+    return {
+        "round_id": round_id,
+        "round": round_no,
+        "players": players,
+        "raw": match,
+    }
+
+
+def load_tracked_players():
+    if not DATA_FILE.exists():
+        return []
+
+    try:
+        data = json.loads(
+            DATA_FILE.read_text(
+                encoding="utf-8"
+            )
+        )
+    except Exception:
+        return []
+
+    return data.get("players", [])
+
+
 def get_fresh_data():
-    event = api_get(f"/events/{EVENT_ID}/")
 
-    tracked = load_tracked_players()
+    print(
+        f"Loading Ravensburger event {EVENT_ID}"
+    )
 
-    registrations = get_all_registrations(EVENT_ID)
-
-    registered_names = []
-
-    for registration in registrations:
-        name = get_player_name(registration)
-
-        if name:
-            registered_names.append(name)
+    event = api_get(
+        f"/events/{EVENT_ID}/"
+    )
 
     rounds = get_rounds(event)
 
-    # Prefer the latest round that has standings.
-    rounds_sorted = sorted(
+    rounds = sorted(
         rounds,
         key=round_number,
-        reverse=True,
     )
 
-    selected_round = None
-    selected_standings = []
-    selected_matches = []
+    all_round_data = []
 
-    for rnd in rounds_sorted:
-        try:
-            standings = get_all_standings(rnd["id"])
+    for rnd in rounds:
 
-            if standings:
-                selected_round = rnd
-                selected_standings = standings
+        rid = rnd.get("id")
 
-                try:
-                    selected_matches = get_all_matches(rnd["id"])
-                except Exception:
-                    selected_matches = []
+        if not rid:
+            continue
 
-                break
+        rno = round_number(rnd)
 
-        except Exception as exc:
-            print(
-                f"Could not load standings for round "
-                f"{rnd.get('id')}: {exc}"
-            )
+        print(
+            f"Loading round {rno} "
+            f"(id={rid})"
+        )
 
-    current_round = None
+        standings = get_round_standings(rid)
 
-    if selected_round:
-        current_round = selected_round.get("round_number")
+        matches = get_round_matches(rid)
 
-    if current_round is None:
-        current_round = event.get("current_round")
+        all_round_data.append(
+            {
+                "id": rid,
+                "round": rno,
+                "standings": [
+                    normalize_standing(
+                        item,
+                        index + 1,
+                    )
+                    for index, item in enumerate(
+                        standings
+                    )
+                    if normalize_standing(
+                        item,
+                        index + 1,
+                    )
+                ],
+                "matches": [
+                    normalize_match(
+                        item,
+                        rid,
+                        rno,
+                    )
+                    for item in matches
+                ],
+            }
+        )
 
+    # Latest round containing standings.
+    latest = None
+
+    for rnd in reversed(all_round_data):
+        if rnd["standings"]:
+            latest = rnd
+            break
+
+    if latest is None and all_round_data:
+        latest = all_round_data[-1]
+
+    tracked = load_tracked_players()
+
+    tracked_names = {
+        p.get("name", "").lower()
+        for p in tracked
+    }
+
+    # Build tracked player data.
     players = []
 
-    for key, tracked_player in tracked.items():
-        standing = find_standing(
-            selected_standings,
-            tracked_player["name"],
-        )
+    if latest:
 
-        player = normalize_player(
-            tracked_player,
-            standing=standing,
-            matches=selected_matches,
-            current_round=current_round,
-        )
+        for tracked_player in tracked:
 
-        players.append(player)
+            target = tracked_player.get(
+                "name",
+                "",
+            ).lower()
 
-    event_name = (
-        event.get("name")
-        or event.get("title")
-        or "Lorcana Event"
-    )
+            standing = next(
+                (
+                    s
+                    for s in latest["standings"]
+                    if s["name"].lower() == target
+                ),
+                None,
+            )
 
-    event_format = (
-        event.get("format_name")
-        or event.get("format")
-        or "Core Constructed"
-    )
+            player = {
+                "name": tracked_player.get(
+                    "name",
+                    "",
+                ),
+                "tag": tracked_player.get(
+                    "tag",
+                    "",
+                ),
+                "rank": (
+                    standing["rank"]
+                    if standing
+                    else None
+                ),
+                "points": (
+                    standing["points"]
+                    if standing
+                    else 0
+                ),
+                "match_wins": (
+                    standing["wins"]
+                    if standing
+                    else 0
+                ),
+                "match_losses": (
+                    standing["losses"]
+                    if standing
+                    else 0
+                ),
+                "game_wins": (
+                    standing["game_wins"]
+                    if standing
+                    else 0
+                ),
+                "game_losses": (
+                    standing["game_losses"]
+                    if standing
+                    else 0
+                ),
+                "status": "active",
+                "matches": [],
+            }
 
-    # Event player count should come from the actual API registration list
-    # whenever possible.
-    player_count = (
-        len(registered_names)
-        or event.get("player_count")
-        or event.get("players")
-        or event.get("registration_count")
-        or 0
+            # Find all matches involving this player.
+            for rnd in all_round_data:
+
+                for match in rnd["matches"]:
+
+                    names = [
+                        n.lower()
+                        for n in match["players"]
+                    ]
+
+                    if target not in names:
+                        continue
+
+                    opponents = [
+                        n
+                        for n in match["players"]
+                        if n.lower() != target
+                    ]
+
+                    raw = match["raw"]
+
+                    # Try to find a result.
+                    result = "—"
+
+                    raw_text = json.dumps(
+                        raw,
+                        ensure_ascii=False,
+                    ).lower()
+
+                    if (
+                        '"result": "win"' in raw_text
+                        or '"result":"win"' in raw_text
+                        or '"winner": true' in raw_text
+                    ):
+                        result = "W"
+
+                    elif (
+                        '"result": "loss"' in raw_text
+                        or '"result":"loss"' in raw_text
+                        or '"winner": false' in raw_text
+                    ):
+                        result = "L"
+
+                    player["matches"].append(
+                        {
+                            "round": match["round"],
+                            "opponent": (
+                                opponents[0]
+                                if opponents
+                                else "—"
+                            ),
+                            "result": result,
+                            "score": (
+                                extract_stat(
+                                    raw,
+                                    "score",
+                                    "game_score",
+                                    "gameScore",
+                                )
+                                or "—"
+                            ),
+                            "table": (
+                                extract_stat(
+                                    raw,
+                                    "table",
+                                    "table_number",
+                                    "tableNumber",
+                                )
+                                or "—"
+                            ),
+                        }
+                    )
+
+            players.append(player)
+
+    # All participants = latest standings.
+    all_standings = (
+        latest["standings"]
+        if latest
+        else []
     )
 
     return {
         "event": {
             "id": str(EVENT_ID),
-            "name": event_name,
-            "format": event_format,
-            "players": player_count,
-            "current_round": current_round,
+            "name": (
+                event.get("name")
+                or event.get("title")
+                or "Lorcana Event"
+            ),
+            "format": (
+                event.get("format_name")
+                or event.get("format")
+                or "Core Constructed"
+            ),
+            "players": len(
+                all_standings
+            ),
+            "current_round": (
+                latest["round"]
+                if latest
+                else None
+            ),
         },
+
         "last_updated": datetime.now(
             timezone.utc
         ).isoformat(),
+
         "players": players,
+
+        "standings": all_standings,
+
+        "rounds": all_round_data,
     }
