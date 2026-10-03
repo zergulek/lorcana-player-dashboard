@@ -8,18 +8,7 @@ services:
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /api/health
     autoDeploy: true
-    envVars:
-      - key: EVENT_ID
-        value: "1007231"
 
-  - type: cron
-    name: lorcana-player-refresh
-    runtime: python
-    region: frankfurt
-    plan: starter
-    schedule: "*/5 * * * *"
-    buildCommand: pip install -r requirements.txt
-    startCommand: python scripts/refresh.py
     envVars:
       - key: EVENT_ID
         value: "1007231"
