@@ -11,6 +11,19 @@ services:
 
     envVars:
       - key: EVENT_ID
+        value: "1007231"services:
+  - type: web
+    name: lorcana-player-dashboard
+    runtime: python
+    region: frankfurt
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python scripts/refresh.py && uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/health
+    autoDeploy: true
+
+    envVars:
+      - key: EVENT_ID
         value: "1007231"
 
   - type: cron
