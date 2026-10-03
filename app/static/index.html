@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Lorcana Player Dashboard</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<main>
+<header class="hero">
+  <div>
+    <div class="eyebrow">DISNEY LORCANA · RAVENSBURGER PLAY</div>
+    <h1 id="eventName">Iconic Tour - CCQ</h1>
+    <p id="eventMeta">Event 1007231</p>
+  </div>
+  <div class="live"><span></span> LIVE DATA</div>
+</header>
+
+<section class="stats">
+  <div><b id="playerCount">—</b><small>EVENT PLAYERS</small></div>
+  <div><b id="trackedCount">—</b><small>TRACKED</small></div>
+  <div><b id="roundName">—</b><small>ROUND</small></div>
+  <div><b id="updated">—</b><small>UPDATED</small></div>
+</section>
+
+<section class="layout">
+  <aside class="panel">
+    <div class="toolbar">
+      <h2>Tracked players</h2>
+      <input id="search" placeholder="Search player...">
+    </div>
+    <div id="playerList"></div>
+  </aside>
+
+  <article class="panel profile">
+    <div id="profile"></div>
+  </article>
+</section>
+</main>
+<script src="/static/app.js"></script>
+</body>
+</html>
